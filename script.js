@@ -483,8 +483,12 @@ async function createImposedPDF(inputPdfBuffer) {
             
             const docLabel = includeFilename ? originalFileName : "";
             const docLabelLeft = includeFilenameLeft ? originalFileName : "";
-            drawImpositionLabel(sheet, docLabel, helveticaFont, finalSheetWidth, labelYPos, outsCount);
-            drawLeftImpositionLabel(sheet, docLabelLeft, helveticaFont, finalSheetHeight, labelXPos, outsCount);
+            
+            // Format suffix logic correctly for Multi-out mode
+            const outsText = outsCount === 1 ? "1 out" : `${outsCount} outs`;
+            
+            drawImpositionLabel(sheet, docLabel, helveticaFont, finalSheetWidth, labelYPos, outsText);
+            drawLeftImpositionLabel(sheet, docLabelLeft, helveticaFont, finalSheetHeight, labelXPos, outsText);
         }
     } 
     else if (impositionMode === 'workandturn') {
@@ -559,8 +563,12 @@ async function createImposedPDF(inputPdfBuffer) {
             const wtPrefix = `Work & Turn [Pages ${p+1} & ${Math.min(p+2, pageCount)}]`;
             const docLabel = includeFilename ? `${wtPrefix} - ${originalFileName}` : "";
             const docLabelLeft = includeFilenameLeft ? `${wtPrefix} - ${originalFileName}` : "";
-            drawImpositionLabel(sheet, docLabel, helveticaFont, finalSheetWidth, labelYPos, outsCount);
-            drawLeftImpositionLabel(sheet, docLabelLeft, helveticaFont, finalSheetHeight, labelXPos, outsCount);
+            
+            // Format suffix logic correctly
+            const outsText = outsCount === 1 ? "1 out" : `${outsCount} outs`;
+            
+            drawImpositionLabel(sheet, docLabel, helveticaFont, finalSheetWidth, labelYPos, outsText);
+            drawLeftImpositionLabel(sheet, docLabelLeft, helveticaFont, finalSheetHeight, labelXPos, outsText);
         }
     }
     else if (impositionMode === 'sanaol') {
@@ -616,8 +624,12 @@ async function createImposedPDF(inputPdfBuffer) {
                 const sanaPrefix = `Contact Sheet [Sheet ${sheetIndex + 1}]`;
                 const docLabel = includeFilename ? `${sanaPrefix} - ${originalFileName}` : "";
                 const docLabelLeft = includeFilenameLeft ? `${sanaPrefix} - ${originalFileName}` : "";
-                drawImpositionLabel(currentSheet, docLabel, helveticaFont, finalSheetWidth, labelYPos, outsCount);
-                drawLeftImpositionLabel(currentSheet, docLabelLeft, helveticaFont, finalSheetHeight, labelXPos, outsCount);
+                
+                // Format suffix logic uniquely for Sana OL mode
+                const outsText = outsCount === 1 ? "1 kind" : `${outsCount} kinds`;
+                
+                drawImpositionLabel(currentSheet, docLabel, helveticaFont, finalSheetWidth, labelYPos, outsText);
+                drawLeftImpositionLabel(currentSheet, docLabelLeft, helveticaFont, finalSheetHeight, labelXPos, outsText);
             }
             
             const r = Math.floor(cellIndex / cols);
@@ -704,7 +716,7 @@ async function createImposedPDF(inputPdfBuffer) {
     return await newPdf.save();
 }
 
-function drawImpositionLabel(sheet, docName, font, sheetW, targetY, outsCount = null) {
+function drawImpositionLabel(sheet, docName, font, sheetW, targetY, outsString = null) {
     if (!docName) return; 
 
     const { rgb } = PDFLib;
@@ -715,8 +727,8 @@ function drawImpositionLabel(sheet, docName, font, sheetW, targetY, outsCount = 
     
     let outsStr = "";
     let outsWidth = 0;
-    if (outsCount) {
-        outsStr = `   (${outsCount}outs)`;
+    if (outsString) {
+        outsStr = `   (${outsString})`;
         outsWidth = font.widthOfTextAtSize(outsStr, fontSize);
     }
     
@@ -727,14 +739,14 @@ function drawImpositionLabel(sheet, docName, font, sheetW, targetY, outsCount = 
     
     sheet.drawText(docName, { x: startX, y: safeYPos, size: fontSize, font: font, color: rgb(0, 0, 0) });
     
-    if (outsCount) {
+    if (outsString) {
         sheet.drawText(outsStr, { x: startX + nameWidth, y: safeYPos, size: fontSize, font: font, color: rgb(0, 0.6, 0) });
     }
     
     sheet.drawText(dateStr, { x: startX + nameWidth + outsWidth, y: safeYPos, size: fontSize, font: font, color: rgb(1, 0, 0) });
 }
 
-function drawLeftImpositionLabel(sheet, docName, font, sheetH, targetX, outsCount = null) {
+function drawLeftImpositionLabel(sheet, docName, font, sheetH, targetX, outsString = null) {
     if (!docName) return;
 
     const { rgb, degrees } = PDFLib;
@@ -744,8 +756,8 @@ function drawLeftImpositionLabel(sheet, docName, font, sheetH, targetX, outsCoun
     const nameWidth = font.widthOfTextAtSize(docName, fontSize);
     let outsStr = "";
     let outsWidth = 0;
-    if (outsCount) {
-        outsStr = `   (${outsCount}outs)`;
+    if (outsString) {
+        outsStr = `   (${outsString})`;
         outsWidth = font.widthOfTextAtSize(outsStr, fontSize);
     }
     const dateWidth = font.widthOfTextAtSize(dateStr, fontSize);
@@ -756,7 +768,7 @@ function drawLeftImpositionLabel(sheet, docName, font, sheetH, targetX, outsCoun
 
     sheet.drawText(docName, { x: safeXPos, y: startY, size: fontSize, font: font, color: rgb(0, 0, 0), rotate: degrees(90) });
 
-    if (outsCount) {
+    if (outsString) {
         sheet.drawText(outsStr, { x: safeXPos, y: startY + nameWidth, size: fontSize, font: font, color: rgb(0, 0.6, 0), rotate: degrees(90) });
     }
 
