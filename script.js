@@ -8,7 +8,7 @@ let currentPdfBlobUrl = null;
 let originalPdfBuffer = null; 
 let originalFileName = "imposed_document.pdf";
 let isSignUpMode = false;
-let currentOutsString = ""; // NEW: Tracks the outs/kinds string for renaming
+let currentOutsString = ""; 
 
 document.addEventListener('DOMContentLoaded', () => {
     // --- UI Elements ---
@@ -94,7 +94,6 @@ document.addEventListener('DOMContentLoaded', () => {
         btnAbout.classList.remove('active');
     });
 
-    // Close modal if user clicks outside of it
     window.addEventListener('click', (event) => {
         if (event.target == aboutModal) aboutModal.style.display = "none";
         if (event.target == docsModal) docsModal.style.display = "none";
@@ -103,7 +102,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (event.target == donateModal) donateModal.style.display = "none";
     });
 
-    // Update active visual state for top links
     const topLinks = [btnHome, btnDocs, btnAbout];
     topLinks.forEach(btn => {
         btn.addEventListener('click', () => {
@@ -137,14 +135,9 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // --- Authentication Workflow ---
-
-    // Monitor Auth Changes
     supabase1.auth.onAuthStateChange(async (event, session) => {
-        
-        // Detect if the user just arrived via the email confirmation link
         if (event === 'SIGNED_IN' && window.location.hash.includes('access_token')) {
             confirmedModal.style.display = 'block';
-            // Clean up the URL hash so it looks clean and professional
             window.history.replaceState(null, null, window.location.pathname);
         }
 
@@ -159,7 +152,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 logoutBtn.textContent = `Logout ${session.user.email}`;
             }
 
-            // CHECK DONATOR STATUS
             try {
                 const { data: profile, error } = await supabase1
                     .from('profiles')
@@ -202,7 +194,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Toggle between Login and Sign Up UI modes
     authSwitchLink.addEventListener('click', (e) => {
         e.preventDefault();
         isSignUpMode = !isSignUpMode;
@@ -223,7 +214,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Handle Auth Form Submit (Login or Registration)
     authForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         authError.textContent = '';
@@ -236,8 +226,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (isSignUpMode) {
                 const { error } = await supabase1.auth.signUp({ email, password });
                 if (error) throw error;
-                
-                // Show the sparkly Yehey popup
                 signUpSuccessModal.style.display = 'block';
                 authForm.reset();
             } else {
@@ -252,20 +240,18 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Handle Logout Event
     logoutBtn.addEventListener('click', async () => {
         const { error } = await supabase1.auth.signOut();
         if (error) console.error("Error signing out:", error.message);
     });
 
-    // Helper to purge PDF memory/DOM elements on logout
     function clearPdfState() {
         if (currentPdfBlobUrl) {
             URL.revokeObjectURL(currentPdfBlobUrl);
         }
         currentPdfBlobUrl = null;
         originalPdfBuffer = null;
-        currentOutsString = ""; // Clear string state
+        currentOutsString = ""; 
         pdfPreview.src = '';
         pdfPreview.style.display = "none";
         placeholderText.style.display = "block";
@@ -274,7 +260,6 @@ document.addEventListener('DOMContentLoaded', () => {
         fileInput.value = '';
     }
 
-    // Toggle contextual UI options based on Imposition type selection
     function updateImpositionUiContext() {
         const mode = document.querySelector('input[name="impositionMode"]:checked').value;
         const saddleTabBtn = document.getElementById('saddleTabBtn');
@@ -325,7 +310,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // --- Core Processing Event Listeners ---
     fileInput.addEventListener('change', async (e) => {
         if (fileInput.files.length > 0) {
             const file = fileInput.files[0];
@@ -341,6 +325,19 @@ document.addEventListener('DOMContentLoaded', () => {
     sidebarInputs.forEach(input => {
         if (input.name === 'impositionMode') {
             input.addEventListener('change', () => {
+                const mode = input.value;
+                
+                // AUTOMATICALLY APPLY PRESETS BASED ON MODE
+                if (mode === 'saddle' || mode === 'perfect16') {
+                    document.getElementById('markLength').value = "0.125";
+                } else if (mode === 'multiout' || mode === 'workandturn' || mode === 'sanaol') {
+                    document.getElementById('marginLeft').value = "0";
+                    document.getElementById('marginTop').value = "0";
+                    document.getElementById('markLength').value = "0.125";
+                    document.getElementById('markThickness').value = "0.013";
+                    document.getElementById('markDistance').value = "0";
+                }
+
                 updateImpositionUiContext();
                 generatePreview();
             });
@@ -357,28 +354,19 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // --- MODIFIED DOWNLOAD EVENT LISTENER ---
     downloadBtn.addEventListener('click', () => {
         if (!currentPdfBlobUrl) return;
         const a = document.createElement('a');
         a.href = currentPdfBlobUrl;
 
-        // 1. Remove the ".pdf" extension from the original file name
         const baseFileName = originalFileName.replace(/\.pdf$/i, '');
-        
-        // 2. Format the date to avoid slashes (e.g. 7-2-2026)
         const d = new Date();
         const dateString = `${d.getMonth() + 1}-${d.getDate()}-${d.getFullYear()}`;
         
-        // 3. Construct the new file name string
         let finalDownloadName = baseFileName;
-        
-        // Append the outs or kinds if applicable
         if (currentOutsString) {
             finalDownloadName += ` (${currentOutsString})`;
         }
-        
-        // Append the date and add .pdf back to the end
         finalDownloadName += ` ${dateString}.pdf`;
 
         a.download = finalDownloadName;
@@ -397,7 +385,6 @@ async function createImposedPDF(inputPdfBuffer) {
     const { PDFDocument, rgb, degrees, StandardFonts } = PDFLib; 
     const in2pt = 72; 
     
-    // Reset suffix when layout generates
     currentOutsString = ""; 
     
     const impositionMode = document.querySelector('input[name="impositionMode"]:checked').value;
@@ -419,6 +406,11 @@ async function createImposedPDF(inputPdfBuffer) {
     const centerGutter = parseFloat(document.getElementById('centerGutter').value) * in2pt;
     const centerOutput = document.getElementById('centerOutput').checked;
     
+    // Parse dashed array from user input 
+    const spineDashStr = document.getElementById('spineDash').value || "3,3";
+    let parsedDashArray = spineDashStr.split(',').map(n => parseFloat(n.trim())).filter(n => !isNaN(n));
+    if (parsedDashArray.length === 0) parsedDashArray = [3, 3];
+
     const bleedType = document.querySelector('input[name="bleedType"]:checked').value;
     const bleedLR = parseFloat(document.getElementById('bleedLR').value) * in2pt;
     const bleedTB = parseFloat(document.getElementById('bleedTB').value) * in2pt;
@@ -485,7 +477,6 @@ async function createImposedPDF(inputPdfBuffer) {
         const labelYPos = gridTopY + (drawCropMarks ? markDistance + markLength : 0) + 10;
         const labelXPos = startX - (drawCropMarks ? markDistance + markLength : 0) - 10;
 
-        // Format suffix logic correctly for Multi-out mode and save globally
         const outsText = outsCount === 1 ? "1 out" : `${outsCount} outs`;
         currentOutsString = outsText;
 
@@ -555,7 +546,6 @@ async function createImposedPDF(inputPdfBuffer) {
         const labelYPos = gridTopY + (drawCropMarks ? markDistance + markLength : 0) + 10;
         const labelXPos = startX - (drawCropMarks ? markDistance + markLength : 0) - 10;
 
-        // Format suffix logic correctly and save globally
         const outsText = outsCount === 1 ? "1 out" : `${outsCount} outs`;
         currentOutsString = outsText;
 
@@ -635,7 +625,6 @@ async function createImposedPDF(inputPdfBuffer) {
         const labelYPos = gridTopY + (drawCropMarks ? markDistance + markLength : 0) + 10;
         const labelXPos = startX - (drawCropMarks ? markDistance + markLength : 0) - 10;
 
-        // Format suffix logic uniquely for Sana OL mode and save globally
         const outsText = outsCount === 1 ? "1 kind" : `${outsCount} kinds`;
         currentOutsString = outsText;
 
@@ -691,10 +680,10 @@ async function createImposedPDF(inputPdfBuffer) {
             const docLabelLeft = includeFilenameLeft ? originalFileName : "";
 
             const frontSheet = newPdf.addPage([finalSheetWidth, finalSheetHeight]);
-            placePagesOnSheet( frontSheet, freshlyEmbeddedPages[frontLeftIndex], freshlyEmbeddedPages[frontRightIndex], finalSheetWidth, finalSheetHeight, drawCropMarks, markLength, markThickness, markDistance, rgb, doAutoscale, bleedType, bleedLR, bleedTB, docLabel, docLabelLeft, helveticaFont );
+            placePagesOnSheet( frontSheet, freshlyEmbeddedPages[frontLeftIndex], freshlyEmbeddedPages[frontRightIndex], finalSheetWidth, finalSheetHeight, drawCropMarks, markLength, markThickness, markDistance, rgb, doAutoscale, bleedType, bleedLR, bleedTB, docLabel, docLabelLeft, helveticaFont, parsedDashArray );
 
             const backSheet = newPdf.addPage([finalSheetWidth, finalSheetHeight]);
-            placePagesOnSheet( backSheet, freshlyEmbeddedPages[backLeftIndex], freshlyEmbeddedPages[backRightIndex], finalSheetWidth, finalSheetHeight, drawCropMarks, markLength, markThickness, markDistance, rgb, doAutoscale, bleedType, bleedLR, bleedTB, docLabel, docLabelLeft, helveticaFont );
+            placePagesOnSheet( backSheet, freshlyEmbeddedPages[backLeftIndex], freshlyEmbeddedPages[backRightIndex], finalSheetWidth, finalSheetHeight, drawCropMarks, markLength, markThickness, markDistance, rgb, doAutoscale, bleedType, bleedLR, bleedTB, docLabel, docLabelLeft, helveticaFont, parsedDashArray );
         }
     }
     else if (impositionMode === 'perfect16') {
@@ -728,10 +717,10 @@ async function createImposedPDF(inputPdfBuffer) {
                 const docLabelLeft = includeFilenameLeft ? originalFileName : "";
 
                 const frontSheet = newPdf.addPage([finalSheetWidth, finalSheetHeight]);
-                placePagesOnSheet( frontSheet, freshlyEmbeddedPages[frontLeftIndex], freshlyEmbeddedPages[frontRightIndex], finalSheetWidth, finalSheetHeight, drawCropMarks, markLength, markThickness, markDistance, rgb, doAutoscale, bleedType, bleedLR, bleedTB, docLabel, docLabelLeft, helveticaFont );
+                placePagesOnSheet( frontSheet, freshlyEmbeddedPages[frontLeftIndex], freshlyEmbeddedPages[frontRightIndex], finalSheetWidth, finalSheetHeight, drawCropMarks, markLength, markThickness, markDistance, rgb, doAutoscale, bleedType, bleedLR, bleedTB, docLabel, docLabelLeft, helveticaFont, parsedDashArray );
 
                 const backSheet = newPdf.addPage([finalSheetWidth, finalSheetHeight]);
-                placePagesOnSheet( backSheet, freshlyEmbeddedPages[backLeftIndex], freshlyEmbeddedPages[backRightIndex], finalSheetWidth, finalSheetHeight, drawCropMarks, markLength, markThickness, markDistance, rgb, doAutoscale, bleedType, bleedLR, bleedTB, docLabel, docLabelLeft, helveticaFont );
+                placePagesOnSheet( backSheet, freshlyEmbeddedPages[backLeftIndex], freshlyEmbeddedPages[backRightIndex], finalSheetWidth, finalSheetHeight, drawCropMarks, markLength, markThickness, markDistance, rgb, doAutoscale, bleedType, bleedLR, bleedTB, docLabel, docLabelLeft, helveticaFont, parsedDashArray );
             }
             chunkStart += chunkPageCount;
         }
@@ -844,7 +833,7 @@ function drawGridCropMarks(sheet, startX, startY, cols, rows, itemW, itemH, trim
     }
 }
 
-function placePagesOnSheet(sheet, leftPageData, rightPageData, sheetW, sheetH, doCropMarks, markLen, markThick, markDistance, rgb, doAutoscale, bleedType, bleedLR, bleedTB, docName, docNameLeft, font) {
+function placePagesOnSheet(sheet, leftPageData, rightPageData, sheetW, sheetH, doCropMarks, markLen, markThick, markDistance, rgb, doAutoscale, bleedType, bleedLR, bleedTB, docName, docNameLeft, font, parsedDashArray) {
     const { pushGraphicsState, popGraphicsState, moveTo, lineTo, clip, endPath } = PDFLib;
     
     const targetW = sheetW / 2;
@@ -907,7 +896,7 @@ function placePagesOnSheet(sheet, leftPageData, rightPageData, sheetW, sheetH, d
 
     if (doCropMarks) {
         const markColor = rgb(0, 0, 0); 
-        drawSaddleStitchCropMarks(sheet, spreadTrimX, spreadTrimY, spreadTrimW, spreadTrimH, spineX, markLen, markDistance, markThick, markColor);
+        drawSaddleStitchCropMarks(sheet, spreadTrimX, spreadTrimY, spreadTrimW, spreadTrimH, spineX, markLen, markDistance, markThick, markColor, parsedDashArray);
     }
     
     const labelYPos = spreadTrimY + spreadTrimH + (doCropMarks ? markDistance + markLen : 0) + 10;
@@ -917,7 +906,7 @@ function placePagesOnSheet(sheet, leftPageData, rightPageData, sheetW, sheetH, d
     drawLeftImpositionLabel(sheet, docNameLeft, font, sheetH, labelXPos);
 }
 
-function drawSaddleStitchCropMarks(sheet, x, y, w, h, spineX, length, distance, thickness, color) {
+function drawSaddleStitchCropMarks(sheet, x, y, w, h, spineX, length, distance, thickness, color, dashArray) {
     sheet.drawRectangle({
         x: x - distance - length,
         y: y - distance - length,
@@ -939,7 +928,7 @@ function drawSaddleStitchCropMarks(sheet, x, y, w, h, spineX, length, distance, 
     sheet.drawLine({ start: { x: x + w, y: y - distance }, end: { x: x + w, y: y - distance - length }, thickness, color });
     sheet.drawLine({ start: { x: x + w + distance, y: y }, end: { x: x + w + distance + length, y: y }, thickness, color });
 
-    const dashArray = [5, 5]; 
+    // Replaced hardcoded array with the dynamic `dashArray` input parameter
     sheet.drawLine({ start: { x: spineX, y: y + h + distance }, end: { x: spineX, y: y + h + distance + length }, thickness, color, dashArray });
     sheet.drawLine({ start: { x: spineX, y: y - distance }, end: { x: spineX, y: y - distance - length }, thickness, color, dashArray });
 }

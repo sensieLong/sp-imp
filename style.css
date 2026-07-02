@@ -194,7 +194,9 @@ body {
     color: #cccccc;
 }
 
-.input-row input[type="number"] {
+/* Updated to include input[type="text"] for the Spine Dash Array */
+.input-row input[type="number"], 
+.input-row input[type="text"] {
     width: 65px;
     padding: 6px;
     background-color: #2b2b2b;
@@ -203,7 +205,8 @@ body {
     border-radius: 4px;
 }
 
-.input-row input[type="number"]:focus {
+.input-row input[type="number"]:focus,
+.input-row input[type="text"]:focus {
     outline: none;
     border-color: #ffa31a;
 }
