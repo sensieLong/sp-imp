@@ -8,6 +8,7 @@ let currentPdfBlobUrl = null;
 let originalPdfBuffer = null; 
 let originalFileName = "imposed_document.pdf";
 let isSignUpMode = false;
+let currentOutsString = ""; // NEW: Tracks the outs/kinds string for renaming
 
 document.addEventListener('DOMContentLoaded', () => {
     // --- UI Elements ---
@@ -264,6 +265,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         currentPdfBlobUrl = null;
         originalPdfBuffer = null;
+        currentOutsString = ""; // Clear string state
         pdfPreview.src = '';
         pdfPreview.style.display = "none";
         placeholderText.style.display = "block";
@@ -355,11 +357,32 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // --- MODIFIED DOWNLOAD EVENT LISTENER ---
     downloadBtn.addEventListener('click', () => {
         if (!currentPdfBlobUrl) return;
         const a = document.createElement('a');
         a.href = currentPdfBlobUrl;
-        a.download = `Imposed_${originalFileName}`;
+
+        // 1. Remove the ".pdf" extension from the original file name
+        const baseFileName = originalFileName.replace(/\.pdf$/i, '');
+        
+        // 2. Format the date to avoid slashes (e.g. 7-2-2026)
+        const d = new Date();
+        const dateString = `${d.getMonth() + 1}-${d.getDate()}-${d.getFullYear()}`;
+        
+        // 3. Construct the new file name string
+        let finalDownloadName = baseFileName;
+        
+        // Append the outs or kinds if applicable
+        if (currentOutsString) {
+            finalDownloadName += ` (${currentOutsString})`;
+        }
+        
+        // Append the date and add .pdf back to the end
+        finalDownloadName += ` ${dateString}.pdf`;
+
+        a.download = finalDownloadName;
+        
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -373,6 +396,9 @@ document.addEventListener('DOMContentLoaded', () => {
 async function createImposedPDF(inputPdfBuffer) {
     const { PDFDocument, rgb, degrees, StandardFonts } = PDFLib; 
     const in2pt = 72; 
+    
+    // Reset suffix when layout generates
+    currentOutsString = ""; 
     
     const impositionMode = document.querySelector('input[name="impositionMode"]:checked').value;
     const paperWidth = parseFloat(document.getElementById('paperWidth').value) * in2pt;
@@ -459,6 +485,10 @@ async function createImposedPDF(inputPdfBuffer) {
         const labelYPos = gridTopY + (drawCropMarks ? markDistance + markLength : 0) + 10;
         const labelXPos = startX - (drawCropMarks ? markDistance + markLength : 0) - 10;
 
+        // Format suffix logic correctly for Multi-out mode and save globally
+        const outsText = outsCount === 1 ? "1 out" : `${outsCount} outs`;
+        currentOutsString = outsText;
+
         for (let pageIndex = 0; pageIndex < pageCount; pageIndex++) {
             const sheet = newPdf.addPage([finalSheetWidth, finalSheetHeight]);
 
@@ -483,9 +513,6 @@ async function createImposedPDF(inputPdfBuffer) {
             
             const docLabel = includeFilename ? originalFileName : "";
             const docLabelLeft = includeFilenameLeft ? originalFileName : "";
-            
-            // Format suffix logic correctly for Multi-out mode
-            const outsText = outsCount === 1 ? "1 out" : `${outsCount} outs`;
             
             drawImpositionLabel(sheet, docLabel, helveticaFont, finalSheetWidth, labelYPos, outsText);
             drawLeftImpositionLabel(sheet, docLabelLeft, helveticaFont, finalSheetHeight, labelXPos, outsText);
@@ -528,6 +555,10 @@ async function createImposedPDF(inputPdfBuffer) {
         const labelYPos = gridTopY + (drawCropMarks ? markDistance + markLength : 0) + 10;
         const labelXPos = startX - (drawCropMarks ? markDistance + markLength : 0) - 10;
 
+        // Format suffix logic correctly and save globally
+        const outsText = outsCount === 1 ? "1 out" : `${outsCount} outs`;
+        currentOutsString = outsText;
+
         for (let p = 0; p < pageCount; p += 2) {
             const sheet = newPdf.addPage([finalSheetWidth, finalSheetHeight]);
             const frontPage = embeddedPages[p];
@@ -563,9 +594,6 @@ async function createImposedPDF(inputPdfBuffer) {
             const wtPrefix = `Work & Turn [Pages ${p+1} & ${Math.min(p+2, pageCount)}]`;
             const docLabel = includeFilename ? `${wtPrefix} - ${originalFileName}` : "";
             const docLabelLeft = includeFilenameLeft ? `${wtPrefix} - ${originalFileName}` : "";
-            
-            // Format suffix logic correctly
-            const outsText = outsCount === 1 ? "1 out" : `${outsCount} outs`;
             
             drawImpositionLabel(sheet, docLabel, helveticaFont, finalSheetWidth, labelYPos, outsText);
             drawLeftImpositionLabel(sheet, docLabelLeft, helveticaFont, finalSheetHeight, labelXPos, outsText);
@@ -607,6 +635,10 @@ async function createImposedPDF(inputPdfBuffer) {
         const labelYPos = gridTopY + (drawCropMarks ? markDistance + markLength : 0) + 10;
         const labelXPos = startX - (drawCropMarks ? markDistance + markLength : 0) - 10;
 
+        // Format suffix logic uniquely for Sana OL mode and save globally
+        const outsText = outsCount === 1 ? "1 kind" : `${outsCount} kinds`;
+        currentOutsString = outsText;
+
         let currentSheet = null;
 
         for (let p = 0; p < pageCount; p++) {
@@ -624,9 +656,6 @@ async function createImposedPDF(inputPdfBuffer) {
                 const sanaPrefix = `Contact Sheet [Sheet ${sheetIndex + 1}]`;
                 const docLabel = includeFilename ? `${sanaPrefix} - ${originalFileName}` : "";
                 const docLabelLeft = includeFilenameLeft ? `${sanaPrefix} - ${originalFileName}` : "";
-                
-                // Format suffix logic uniquely for Sana OL mode
-                const outsText = outsCount === 1 ? "1 kind" : `${outsCount} kinds`;
                 
                 drawImpositionLabel(currentSheet, docLabel, helveticaFont, finalSheetWidth, labelYPos, outsText);
                 drawLeftImpositionLabel(currentSheet, docLabelLeft, helveticaFont, finalSheetHeight, labelXPos, outsText);
