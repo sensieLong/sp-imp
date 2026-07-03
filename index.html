@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="./style.css">
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 </head>
 <body>
     <div class="top-nav">
@@ -176,6 +177,8 @@
                         <p>Hit "Preview Imposition" at the top to see your perfectly trimmed layout configuration.</p>
                     </div>
                     <iframe id="pdfPreview" title="PDF Preview"></iframe>
+                    <div id="pdfCanvasContainer" class="pdf-canvas-container"></div>
+                    <div id="pageIndicator" class="page-indicator" style="display:none;"></div>
                 </div>
                 
                 <div id="adContainer" class="ads-banner" style="display: none;">

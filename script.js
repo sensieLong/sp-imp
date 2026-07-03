@@ -10,6 +10,33 @@ let originalFileName = "imposed_document.pdf";
 let isSignUpMode = false;
 let currentOutsString = ""; 
 
+// --- Device Detection & Canvas Preview State ---
+if (window.pdfjsLib) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
+
+let canvasPdfDoc = null;
+let pageIntersectionObserver = null;
+let canvasZoomScale = 1;
+let pinchStartDistance = null;
+let pinchStartScale = 1;
+let indicatorFadeTimer = null;
+
+// Desktop Chrome/Edge/Firefox render PDFs natively inside an iframe.
+// Android, iOS, tablets, and anything we don't recognize fall back to a
+// pdf.js canvas renderer since they lack a native in-browser PDF plugin.
+function isDesktopDevice() {
+    const ua = navigator.userAgent || navigator.vendor || window.opera || "";
+    const mobileOrTabletPattern = /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini|Mobi/i;
+    if (mobileOrTabletPattern.test(ua)) return false;
+
+    // iPadOS 13+ reports as "Macintosh" but exposes multi-touch — treat as non-desktop
+    if (/Macintosh/.test(ua) && navigator.maxTouchPoints && navigator.maxTouchPoints > 1) return false;
+
+    const knownDesktopPattern = /Windows NT|Macintosh|X11|Linux x86_64|CrOS/i;
+    return knownDesktopPattern.test(ua);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     // --- UI Elements ---
     const generateBtn = document.getElementById('generateBtn');
@@ -18,6 +45,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const statusMessage = document.getElementById('statusMessage');
     const pdfPreview = document.getElementById('pdfPreview');
     const placeholderText = document.getElementById('placeholderText');
+    const pdfCanvasContainer = document.getElementById('pdfCanvasContainer');
+    const pageIndicator = document.getElementById('pageIndicator');
 
     // Auth & Layout Elements
     const authScreen = document.getElementById('authScreen');
@@ -254,10 +283,131 @@ document.addEventListener('DOMContentLoaded', () => {
         currentOutsString = ""; 
         pdfPreview.src = '';
         pdfPreview.style.display = "none";
+        resetCanvasPreview();
         placeholderText.style.display = "block";
         downloadBtn.style.display = "none";
         statusMessage.textContent = '';
         fileInput.value = '';
+    }
+
+    // --- Canvas-based Preview (Android / tablet / unrecognized devices) ---
+    function resetCanvasPreview() {
+        if (pageIntersectionObserver) {
+            pageIntersectionObserver.disconnect();
+            pageIntersectionObserver = null;
+        }
+        if (canvasPdfDoc) {
+            canvasPdfDoc.destroy();
+            canvasPdfDoc = null;
+        }
+        pdfCanvasContainer.innerHTML = '';
+        pdfCanvasContainer.style.display = 'none';
+        pageIndicator.style.display = 'none';
+        canvasZoomScale = 1;
+    }
+
+    async function renderPdfWithCanvas(blobUrl) {
+        resetCanvasPreview();
+        pdfCanvasContainer.style.display = 'block';
+        pdfCanvasContainer.innerHTML = '<div class="pdf-canvas-loading">Rendering pages…</div>';
+
+        const zoomLayer = document.createElement('div');
+        zoomLayer.className = 'pdf-zoom-layer';
+
+        try {
+            const loadingTask = pdfjsLib.getDocument(blobUrl);
+            const pdfDoc = await loadingTask.promise;
+            canvasPdfDoc = pdfDoc;
+
+            pdfCanvasContainer.innerHTML = '';
+            pdfCanvasContainer.appendChild(zoomLayer);
+
+            const containerWidth = pdfCanvasContainer.clientWidth || 600;
+
+            for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
+                const page = await pdfDoc.getPage(pageNum);
+                const unscaledViewport = page.getViewport({ scale: 1 });
+                const fitScale = (containerWidth - 24) / unscaledViewport.width;
+                const viewport = page.getViewport({ scale: Math.max(fitScale, 0.1) });
+
+                const canvas = document.createElement('canvas');
+                canvas.width = viewport.width;
+                canvas.height = viewport.height;
+                const ctx = canvas.getContext('2d');
+
+                const pageWrap = document.createElement('div');
+                pageWrap.className = 'pdf-page-wrap';
+                pageWrap.dataset.pageNum = String(pageNum);
+                pageWrap.appendChild(canvas);
+                zoomLayer.appendChild(pageWrap);
+
+                await page.render({ canvasContext: ctx, viewport }).promise;
+            }
+
+            setupPageIndicator(pdfDoc.numPages);
+            setupPinchToZoom(zoomLayer);
+        } catch (error) {
+            console.error("Canvas render error:", error);
+            pdfCanvasContainer.innerHTML = '<div class="pdf-canvas-loading">Could not render preview on this device.</div>';
+        }
+    }
+
+    function setupPageIndicator(numPages) {
+        const pageWraps = pdfCanvasContainer.querySelectorAll('.pdf-page-wrap');
+        if (!pageWraps.length) return;
+
+        pageIndicator.style.display = 'block';
+        pageIndicator.textContent = `Page 1 / ${numPages}`;
+
+        pageIntersectionObserver = new IntersectionObserver((entries) => {
+            let mostVisible = null;
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    if (!mostVisible || entry.intersectionRatio > mostVisible.intersectionRatio) {
+                        mostVisible = entry;
+                    }
+                }
+            });
+            if (mostVisible) {
+                pageIndicator.textContent = `Page ${mostVisible.target.dataset.pageNum} / ${numPages}`;
+                pageIndicator.classList.remove('faded');
+                clearTimeout(indicatorFadeTimer);
+                indicatorFadeTimer = setTimeout(() => pageIndicator.classList.add('faded'), 1500);
+            }
+        }, { root: pdfCanvasContainer, threshold: [0.25, 0.5, 0.75] });
+
+        pageWraps.forEach(wrap => pageIntersectionObserver.observe(wrap));
+    }
+
+    function setupPinchToZoom(zoomLayer) {
+        const getTouchDistance = (touches) => {
+            const dx = touches[0].clientX - touches[1].clientX;
+            const dy = touches[0].clientY - touches[1].clientY;
+            return Math.sqrt(dx * dx + dy * dy);
+        };
+
+        pdfCanvasContainer.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 2) {
+                pinchStartDistance = getTouchDistance(e.touches);
+                pinchStartScale = canvasZoomScale;
+            }
+        }, { passive: true });
+
+        pdfCanvasContainer.addEventListener('touchmove', (e) => {
+            if (e.touches.length === 2 && pinchStartDistance) {
+                e.preventDefault();
+                const newDistance = getTouchDistance(e.touches);
+                const ratio = newDistance / pinchStartDistance;
+                canvasZoomScale = Math.min(Math.max(pinchStartScale * ratio, 0.5), 3);
+                zoomLayer.style.transform = `scale(${canvasZoomScale})`;
+            }
+        }, { passive: false });
+
+        pdfCanvasContainer.addEventListener('touchend', (e) => {
+            if (e.touches.length < 2) {
+                pinchStartDistance = null;
+            }
+        }, { passive: true });
     }
 
     function updateImpositionUiContext() {
@@ -295,8 +445,16 @@ document.addEventListener('DOMContentLoaded', () => {
             
             currentPdfBlobUrl = URL.createObjectURL(blob);
             placeholderText.style.display = "none";
-            pdfPreview.style.display = "block";
-            pdfPreview.src = currentPdfBlobUrl;
+
+            if (isDesktopDevice()) {
+                resetCanvasPreview();
+                pdfPreview.style.display = "block";
+                pdfPreview.src = currentPdfBlobUrl;
+            } else {
+                pdfPreview.style.display = "none";
+                pdfPreview.src = "";
+                await renderPdfWithCanvas(currentPdfBlobUrl);
+            }
 
             downloadBtn.style.display = "inline-block";
             statusMessage.style.color = "#4CAF50";
@@ -321,22 +479,70 @@ document.addEventListener('DOMContentLoaded', () => {
 
     generateBtn.addEventListener('click', generatePreview);
 
+    // Complete preset table — every field listed here is force-set whenever
+    // its mode is selected, regardless of which mode was active before.
+    // This guarantees switching modes always returns to that mode's required
+    // defaults instead of inheriting leftover values from another mode.
+    const impositionModePresets = {
+        saddle: {
+            marginLeft: "0.25",
+            marginTop: "0.25",
+            markLength: "0.125",
+            markThickness: "0.013",
+            markDistance: "0.138",
+            centerGutter: "0"
+        },
+        perfect16: {
+            marginLeft: "0.25",
+            marginTop: "0.25",
+            markLength: "0.125",
+            markThickness: "0.013",
+            markDistance: "0.138",
+            centerGutter: "0"
+        },
+        multiout: {
+            marginLeft: "0",
+            marginTop: "0",
+            markLength: "0.125",
+            markThickness: "0.013",
+            markDistance: "0",
+            centerGutter: "0"
+        },
+        workandturn: {
+            marginLeft: "0",
+            marginTop: "0",
+            markLength: "0.125",
+            markThickness: "0.013",
+            markDistance: "0",
+            centerGutter: "0"
+        },
+        sanaol: {
+            marginLeft: "0",
+            marginTop: "0",
+            markLength: "0.125",
+            markThickness: "0.013",
+            markDistance: "0",
+            centerGutter: "0"
+        }
+    };
+
+    function applyImpositionModePreset(mode) {
+        const preset = impositionModePresets[mode];
+        if (!preset) return;
+        Object.keys(preset).forEach(fieldId => {
+            const field = document.getElementById(fieldId);
+            if (field) field.value = preset[fieldId];
+        });
+    }
+
     const sidebarInputs = document.querySelectorAll('#mainApp input');
     sidebarInputs.forEach(input => {
         if (input.name === 'impositionMode') {
             input.addEventListener('change', () => {
                 const mode = input.value;
-                
+
                 // AUTOMATICALLY APPLY PRESETS BASED ON MODE
-                if (mode === 'saddle' || mode === 'perfect16') {
-                    document.getElementById('markLength').value = "0.125";
-                } else if (mode === 'multiout' || mode === 'workandturn' || mode === 'sanaol') {
-                    document.getElementById('marginLeft').value = "0";
-                    document.getElementById('marginTop').value = "0";
-                    document.getElementById('markLength').value = "0.125";
-                    document.getElementById('markThickness').value = "0.013";
-                    document.getElementById('markDistance').value = "0";
-                }
+                applyImpositionModePreset(mode);
 
                 updateImpositionUiContext();
                 generatePreview();
