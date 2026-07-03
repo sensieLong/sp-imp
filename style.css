@@ -3,11 +3,21 @@
     font-family: Arial, Helvetica, sans-serif;
 }
 
+html {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+}
+
 body {
     margin: 0;
     background-color: #000000;
     color: #e0e0e0;
-    overflow: hidden; 
+    overflow: hidden;
+    height: 100%;
+    width: 100%;
+    position: fixed;
+    overscroll-behavior: none;
 }
 
 /* TOP NAV */
@@ -96,6 +106,7 @@ body {
 .app-container {
     display: flex;
     height: calc(100vh - 70px);
+    height: calc(100dvh - 70px);
 }
 
 /* SLIM ICON SIDEBAR */
@@ -268,17 +279,28 @@ input[type="checkbox"], input[type="radio"] {
 }
 
 /* CANVAS-BASED PREVIEW (Android / tablet / unrecognized devices) */
-.pdf-canvas-container {
+.pdf-canvas-shell {
     display: none;
     width: 100%;
     height: 100%;
-    overflow-y: auto;
-    overflow-x: hidden;
     background: #2c2c2c;
     border-radius: 4px;
     box-shadow: 0 4px 25px rgba(0,0,0,0.8);
+    overflow: hidden;
+    position: relative;
+}
+
+.pdf-canvas-shell.active { display: flex; }
+
+.pdf-canvas-container {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
     -webkit-overflow-scrolling: touch;
     touch-action: pan-y pinch-zoom;
+    overscroll-behavior: contain;
     position: relative;
 }
 
@@ -311,23 +333,126 @@ input[type="checkbox"], input[type="radio"] {
     font-size: 14px;
 }
 
-.page-indicator {
-    position: absolute;
-    top: 15px;
-    right: 15px;
-    background: rgba(0,0,0,0.75);
-    color: #fff;
-    padding: 6px 14px;
-    border-radius: 20px;
-    font-size: 13px;
-    font-weight: bold;
-    z-index: 50;
-    pointer-events: none;
-    opacity: 1;
-    transition: opacity 0.4s ease;
+/* THUMBNAIL RAIL — small page previews along the right edge */
+.pdf-thumbnail-rail {
+    flex: 0 0 76px;
+    width: 76px;
+    height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+    background: rgba(0,0,0,0.5);
+    border-left: 1px solid #000;
+    padding: 10px 8px 70px 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    touch-action: pan-y;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
 }
 
-.page-indicator.faded { opacity: 0; }
+.pdf-thumbnail-rail::-webkit-scrollbar { width: 5px; }
+.pdf-thumbnail-rail::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
+
+.pdf-thumb-item {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    opacity: 0.6;
+    transition: opacity 0.2s ease;
+}
+
+.pdf-thumb-item:hover { opacity: 0.85; }
+
+.pdf-thumb-item.active { opacity: 1; }
+
+.pdf-thumb-item canvas {
+    width: 100%;
+    height: auto;
+    background: #fff;
+    border-radius: 2px;
+    border: 2px solid transparent;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.6);
+}
+
+.pdf-thumb-item.active canvas { border-color: #ffa31a; }
+
+.pdf-thumb-label {
+    font-size: 10px;
+    color: #aaa;
+    font-weight: bold;
+}
+
+.pdf-thumb-item.active .pdf-thumb-label { color: #ffa31a; }
+
+/* BOTTOM NAVIGATION BAR — pinned to the bottom of the preview at all times */
+.pdf-bottom-nav {
+    display: none;
+    position: absolute;
+    left: 50%;
+    bottom: 16px;
+    bottom: calc(16px + env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    z-index: 200;
+    background: rgba(17,17,17,0.92);
+    border: 1px solid #333;
+    border-radius: 30px;
+    padding: 8px 12px;
+    align-items: center;
+    gap: 6px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.7);
+    backdrop-filter: blur(6px);
+}
+
+.pdf-bottom-nav.active { display: flex; }
+
+.pdf-nav-btn {
+    background: transparent;
+    border: none;
+    color: #fff;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    font-size: 18px;
+    font-weight: bold;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color 0.2s;
+}
+
+.pdf-nav-btn:hover { background-color: #333; }
+.pdf-nav-btn:active { background-color: #ffa31a; color: #000; }
+.pdf-nav-btn:disabled { color: #555; cursor: not-allowed; background: transparent; }
+
+.pdf-page-counter {
+    color: #fff;
+    font-size: 13px;
+    font-weight: bold;
+    min-width: 64px;
+    text-align: center;
+    user-select: none;
+}
+
+.pdf-nav-divider {
+    width: 1px;
+    height: 22px;
+    background: #444;
+    margin: 0 4px;
+}
+
+.pdf-zoom-reset {
+    font-size: 11px;
+    width: auto;
+    min-width: 40px;
+    padding: 0 6px;
+    border-radius: 17px;
+}
 
 /* AD BANNER CONTAINER */
 .ads-banner {

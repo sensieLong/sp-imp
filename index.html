@@ -177,8 +177,21 @@
                         <p>Hit "Preview Imposition" at the top to see your perfectly trimmed layout configuration.</p>
                     </div>
                     <iframe id="pdfPreview" title="PDF Preview"></iframe>
-                    <div id="pdfCanvasContainer" class="pdf-canvas-container"></div>
-                    <div id="pageIndicator" class="page-indicator" style="display:none;"></div>
+
+                    <div id="pdfCanvasShell" class="pdf-canvas-shell">
+                        <div id="pdfCanvasContainer" class="pdf-canvas-container"></div>
+                        <div id="pdfThumbnailRail" class="pdf-thumbnail-rail"></div>
+                    </div>
+
+                    <div id="pdfBottomNav" class="pdf-bottom-nav">
+                        <button id="pdfPrevPageBtn" class="pdf-nav-btn" title="Previous page">‹</button>
+                        <span id="pdfPageCounter" class="pdf-page-counter">Page 1 / 1</span>
+                        <button id="pdfNextPageBtn" class="pdf-nav-btn" title="Next page">›</button>
+                        <div class="pdf-nav-divider"></div>
+                        <button id="pdfZoomOutBtn" class="pdf-nav-btn" title="Zoom out">−</button>
+                        <button id="pdfZoomResetBtn" class="pdf-nav-btn pdf-zoom-reset" title="Reset zoom">100%</button>
+                        <button id="pdfZoomInBtn" class="pdf-nav-btn" title="Zoom in">+</button>
+                    </div>
                 </div>
                 
                 <div id="adContainer" class="ads-banner" style="display: none;">

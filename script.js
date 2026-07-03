@@ -20,7 +20,10 @@ let pageIntersectionObserver = null;
 let canvasZoomScale = 1;
 let pinchStartDistance = null;
 let pinchStartScale = 1;
-let indicatorFadeTimer = null;
+let currentVisiblePage = 1;
+let totalCanvasPages = 0;
+let pageWrapEls = [];
+let thumbEls = [];
 
 // Desktop Chrome/Edge/Firefox render PDFs natively inside an iframe.
 // Android, iOS, tablets, and anything we don't recognize fall back to a
@@ -45,8 +48,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const statusMessage = document.getElementById('statusMessage');
     const pdfPreview = document.getElementById('pdfPreview');
     const placeholderText = document.getElementById('placeholderText');
+    const pdfCanvasShell = document.getElementById('pdfCanvasShell');
     const pdfCanvasContainer = document.getElementById('pdfCanvasContainer');
-    const pageIndicator = document.getElementById('pageIndicator');
+    const pdfThumbnailRail = document.getElementById('pdfThumbnailRail');
+    const pdfBottomNav = document.getElementById('pdfBottomNav');
+    const pdfPrevPageBtn = document.getElementById('pdfPrevPageBtn');
+    const pdfNextPageBtn = document.getElementById('pdfNextPageBtn');
+    const pdfPageCounter = document.getElementById('pdfPageCounter');
+    const pdfZoomOutBtn = document.getElementById('pdfZoomOutBtn');
+    const pdfZoomInBtn = document.getElementById('pdfZoomInBtn');
+    const pdfZoomResetBtn = document.getElementById('pdfZoomResetBtn');
 
     // Auth & Layout Elements
     const authScreen = document.getElementById('authScreen');
@@ -301,14 +312,19 @@ document.addEventListener('DOMContentLoaded', () => {
             canvasPdfDoc = null;
         }
         pdfCanvasContainer.innerHTML = '';
-        pdfCanvasContainer.style.display = 'none';
-        pageIndicator.style.display = 'none';
+        pdfThumbnailRail.innerHTML = '';
+        pdfCanvasShell.classList.remove('active');
+        pdfBottomNav.classList.remove('active');
         canvasZoomScale = 1;
+        currentVisiblePage = 1;
+        totalCanvasPages = 0;
+        pageWrapEls = [];
+        thumbEls = [];
     }
 
     async function renderPdfWithCanvas(blobUrl) {
         resetCanvasPreview();
-        pdfCanvasContainer.style.display = 'block';
+        pdfCanvasShell.classList.add('active');
         pdfCanvasContainer.innerHTML = '<div class="pdf-canvas-loading">Rendering pages…</div>';
 
         const zoomLayer = document.createElement('div');
@@ -318,10 +334,12 @@ document.addEventListener('DOMContentLoaded', () => {
             const loadingTask = pdfjsLib.getDocument(blobUrl);
             const pdfDoc = await loadingTask.promise;
             canvasPdfDoc = pdfDoc;
+            totalCanvasPages = pdfDoc.numPages;
 
             pdfCanvasContainer.innerHTML = '';
             pdfCanvasContainer.appendChild(zoomLayer);
 
+            // Reserve space for the thumbnail rail so pages don't render behind it
             const containerWidth = pdfCanvasContainer.clientWidth || 600;
 
             for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
@@ -340,24 +358,65 @@ document.addEventListener('DOMContentLoaded', () => {
                 pageWrap.dataset.pageNum = String(pageNum);
                 pageWrap.appendChild(canvas);
                 zoomLayer.appendChild(pageWrap);
+                pageWrapEls.push(pageWrap);
 
                 await page.render({ canvasContext: ctx, viewport }).promise;
+
+                // Small thumbnail for the side rail, rendered from the same page object
+                const thumbViewport = page.getViewport({ scale: 60 / unscaledViewport.width });
+                const thumbCanvas = document.createElement('canvas');
+                thumbCanvas.width = thumbViewport.width;
+                thumbCanvas.height = thumbViewport.height;
+                const thumbCtx = thumbCanvas.getContext('2d');
+                await page.render({ canvasContext: thumbCtx, viewport: thumbViewport }).promise;
+
+                const thumbItem = document.createElement('div');
+                thumbItem.className = 'pdf-thumb-item';
+                thumbItem.dataset.pageNum = String(pageNum);
+                const thumbLabel = document.createElement('div');
+                thumbLabel.className = 'pdf-thumb-label';
+                thumbLabel.textContent = String(pageNum);
+                thumbItem.appendChild(thumbCanvas);
+                thumbItem.appendChild(thumbLabel);
+                thumbItem.addEventListener('click', () => goToPage(pageNum));
+                pdfThumbnailRail.appendChild(thumbItem);
+                thumbEls.push(thumbItem);
             }
 
+            pdfBottomNav.classList.add('active');
+            updatePageUi(1);
             setupPageIndicator(pdfDoc.numPages);
             setupPinchToZoom(zoomLayer);
+            setupBottomNavControls(zoomLayer);
         } catch (error) {
             console.error("Canvas render error:", error);
             pdfCanvasContainer.innerHTML = '<div class="pdf-canvas-loading">Could not render preview on this device.</div>';
         }
     }
 
-    function setupPageIndicator(numPages) {
-        const pageWraps = pdfCanvasContainer.querySelectorAll('.pdf-page-wrap');
-        if (!pageWraps.length) return;
+    function updatePageUi(pageNum) {
+        currentVisiblePage = pageNum;
+        pdfPageCounter.textContent = `Page ${pageNum} / ${totalCanvasPages}`;
+        pdfPrevPageBtn.disabled = pageNum <= 1;
+        pdfNextPageBtn.disabled = pageNum >= totalCanvasPages;
+        thumbEls.forEach(el => {
+            el.classList.toggle('active', Number(el.dataset.pageNum) === pageNum);
+        });
+        const activeThumb = thumbEls[pageNum - 1];
+        if (activeThumb) {
+            activeThumb.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+    }
 
-        pageIndicator.style.display = 'block';
-        pageIndicator.textContent = `Page 1 / ${numPages}`;
+    function goToPage(pageNum) {
+        const wrap = pageWrapEls[pageNum - 1];
+        if (wrap) {
+            wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    }
+
+    function setupPageIndicator(numPages) {
+        if (!pageWrapEls.length) return;
 
         pageIntersectionObserver = new IntersectionObserver((entries) => {
             let mostVisible = null;
@@ -369,14 +428,29 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
             if (mostVisible) {
-                pageIndicator.textContent = `Page ${mostVisible.target.dataset.pageNum} / ${numPages}`;
-                pageIndicator.classList.remove('faded');
-                clearTimeout(indicatorFadeTimer);
-                indicatorFadeTimer = setTimeout(() => pageIndicator.classList.add('faded'), 1500);
+                updatePageUi(Number(mostVisible.target.dataset.pageNum));
             }
         }, { root: pdfCanvasContainer, threshold: [0.25, 0.5, 0.75] });
 
-        pageWraps.forEach(wrap => pageIntersectionObserver.observe(wrap));
+        pageWrapEls.forEach(wrap => pageIntersectionObserver.observe(wrap));
+    }
+
+    function setupBottomNavControls(zoomLayer) {
+        const applyZoom = (newScale) => {
+            canvasZoomScale = Math.min(Math.max(newScale, 0.5), 3);
+            zoomLayer.style.transform = `scale(${canvasZoomScale})`;
+            pdfZoomResetBtn.textContent = `${Math.round(canvasZoomScale * 100)}%`;
+        };
+
+        pdfPrevPageBtn.addEventListener('click', () => {
+            if (currentVisiblePage > 1) goToPage(currentVisiblePage - 1);
+        });
+        pdfNextPageBtn.addEventListener('click', () => {
+            if (currentVisiblePage < totalCanvasPages) goToPage(currentVisiblePage + 1);
+        });
+        pdfZoomInBtn.addEventListener('click', () => applyZoom(canvasZoomScale + 0.25));
+        pdfZoomOutBtn.addEventListener('click', () => applyZoom(canvasZoomScale - 0.25));
+        pdfZoomResetBtn.addEventListener('click', () => applyZoom(1));
     }
 
     function setupPinchToZoom(zoomLayer) {
@@ -400,6 +474,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const ratio = newDistance / pinchStartDistance;
                 canvasZoomScale = Math.min(Math.max(pinchStartScale * ratio, 0.5), 3);
                 zoomLayer.style.transform = `scale(${canvasZoomScale})`;
+                pdfZoomResetBtn.textContent = `${Math.round(canvasZoomScale * 100)}%`;
             }
         }, { passive: false });
 
