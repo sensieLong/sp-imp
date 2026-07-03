@@ -11,10 +11,6 @@ let isSignUpMode = false;
 let currentOutsString = ""; 
 
 // --- Device Detection & Canvas Preview State ---
-if (window.pdfjsLib) {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-}
-
 let canvasPdfDoc = null;
 let pageIntersectionObserver = null;
 let canvasZoomScale = 1;
@@ -24,6 +20,16 @@ let currentVisiblePage = 1;
 let totalCanvasPages = 0;
 let pageWrapEls = [];
 let thumbEls = [];
+let activeZoomLayer = null;
+const PDFJS_WORKER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+function isPdfJsReady() {
+    return typeof window.pdfjsLib !== 'undefined' && typeof pdfjsLib.getDocument === 'function';
+}
+
+if (isPdfJsReady()) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_SRC;
+}
 
 // Desktop Chrome/Edge/Firefox render PDFs natively inside an iframe.
 // Android, iOS, tablets, and anything we don't recognize fall back to a
@@ -302,6 +308,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- Canvas-based Preview (Android / tablet / unrecognized devices) ---
+    const MAX_CANVAS_DIMENSION = 2600; // guards against mobile browser canvas size/memory limits
+
     function resetCanvasPreview() {
         if (pageIntersectionObserver) {
             pageIntersectionObserver.disconnect();
@@ -320,6 +328,7 @@ document.addEventListener('DOMContentLoaded', () => {
         totalCanvasPages = 0;
         pageWrapEls = [];
         thumbEls = [];
+        activeZoomLayer = null;
     }
 
     async function renderPdfWithCanvas(blobUrl) {
@@ -327,8 +336,15 @@ document.addEventListener('DOMContentLoaded', () => {
         pdfCanvasShell.classList.add('active');
         pdfCanvasContainer.innerHTML = '<div class="pdf-canvas-loading">Rendering pages…</div>';
 
+        if (!isPdfJsReady()) {
+            console.error("pdf.js failed to load — check network access to cdnjs.cloudflare.com");
+            pdfCanvasContainer.innerHTML = '<div class="pdf-canvas-loading">Preview engine failed to load. Check your connection and try again.</div>';
+            return;
+        }
+
         const zoomLayer = document.createElement('div');
         zoomLayer.className = 'pdf-zoom-layer';
+        activeZoomLayer = zoomLayer;
 
         try {
             const loadingTask = pdfjsLib.getDocument(blobUrl);
@@ -341,53 +357,77 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Reserve space for the thumbnail rail so pages don't render behind it
             const containerWidth = pdfCanvasContainer.clientWidth || 600;
+            let renderedAtLeastOne = false;
 
             for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
-                const page = await pdfDoc.getPage(pageNum);
-                const unscaledViewport = page.getViewport({ scale: 1 });
-                const fitScale = (containerWidth - 24) / unscaledViewport.width;
-                const viewport = page.getViewport({ scale: Math.max(fitScale, 0.1) });
+                try {
+                    const page = await pdfDoc.getPage(pageNum);
+                    const unscaledViewport = page.getViewport({ scale: 1 });
+                    let fitScale = (containerWidth - 24) / unscaledViewport.width;
+                    if (!isFinite(fitScale) || fitScale <= 0) fitScale = 1;
 
-                const canvas = document.createElement('canvas');
-                canvas.width = viewport.width;
-                canvas.height = viewport.height;
-                const ctx = canvas.getContext('2d');
+                    // Clamp so the rendered canvas never exceeds a safe pixel size on
+                    // memory-constrained mobile devices (avoids a null 2D context).
+                    const rawViewport = page.getViewport({ scale: fitScale });
+                    const largestSide = Math.max(rawViewport.width, rawViewport.height);
+                    const safetyFactor = largestSide > MAX_CANVAS_DIMENSION ? (MAX_CANVAS_DIMENSION / largestSide) : 1;
+                    const viewport = page.getViewport({ scale: fitScale * safetyFactor });
 
-                const pageWrap = document.createElement('div');
-                pageWrap.className = 'pdf-page-wrap';
-                pageWrap.dataset.pageNum = String(pageNum);
-                pageWrap.appendChild(canvas);
-                zoomLayer.appendChild(pageWrap);
-                pageWrapEls.push(pageWrap);
+                    const canvas = document.createElement('canvas');
+                    canvas.width = Math.max(1, Math.round(viewport.width));
+                    canvas.height = Math.max(1, Math.round(viewport.height));
+                    const ctx = canvas.getContext('2d');
+                    if (!ctx) throw new Error('2D canvas context unavailable for page ' + pageNum);
 
-                await page.render({ canvasContext: ctx, viewport }).promise;
+                    const pageWrap = document.createElement('div');
+                    pageWrap.className = 'pdf-page-wrap';
+                    pageWrap.dataset.pageNum = String(pageNum);
+                    pageWrap.appendChild(canvas);
+                    zoomLayer.appendChild(pageWrap);
+                    pageWrapEls.push(pageWrap);
 
-                // Small thumbnail for the side rail, rendered from the same page object
-                const thumbViewport = page.getViewport({ scale: 60 / unscaledViewport.width });
-                const thumbCanvas = document.createElement('canvas');
-                thumbCanvas.width = thumbViewport.width;
-                thumbCanvas.height = thumbViewport.height;
-                const thumbCtx = thumbCanvas.getContext('2d');
-                await page.render({ canvasContext: thumbCtx, viewport: thumbViewport }).promise;
+                    await page.render({ canvasContext: ctx, viewport }).promise;
+                    renderedAtLeastOne = true;
 
-                const thumbItem = document.createElement('div');
-                thumbItem.className = 'pdf-thumb-item';
-                thumbItem.dataset.pageNum = String(pageNum);
-                const thumbLabel = document.createElement('div');
-                thumbLabel.className = 'pdf-thumb-label';
-                thumbLabel.textContent = String(pageNum);
-                thumbItem.appendChild(thumbCanvas);
-                thumbItem.appendChild(thumbLabel);
-                thumbItem.addEventListener('click', () => goToPage(pageNum));
-                pdfThumbnailRail.appendChild(thumbItem);
-                thumbEls.push(thumbItem);
+                    // Thumbnail is scaled DOWN from the already-rendered canvas via
+                    // drawImage — avoids invoking pdf.js render() twice on the same
+                    // page, which is a known source of crashes on some mobile browsers.
+                    const thumbWidth = 60;
+                    const thumbHeight = Math.max(1, Math.round(canvas.height * (thumbWidth / canvas.width)));
+                    const thumbCanvas = document.createElement('canvas');
+                    thumbCanvas.width = thumbWidth;
+                    thumbCanvas.height = thumbHeight;
+                    const thumbCtx = thumbCanvas.getContext('2d');
+                    if (thumbCtx) {
+                        thumbCtx.drawImage(canvas, 0, 0, thumbWidth, thumbHeight);
+                    }
+
+                    const thumbItem = document.createElement('div');
+                    thumbItem.className = 'pdf-thumb-item';
+                    thumbItem.dataset.pageNum = String(pageNum);
+                    const thumbLabel = document.createElement('div');
+                    thumbLabel.className = 'pdf-thumb-label';
+                    thumbLabel.textContent = String(pageNum);
+                    thumbItem.appendChild(thumbCanvas);
+                    thumbItem.appendChild(thumbLabel);
+                    thumbItem.addEventListener('click', () => goToPage(pageNum));
+                    pdfThumbnailRail.appendChild(thumbItem);
+                    thumbEls.push(thumbItem);
+                } catch (pageError) {
+                    // One bad page shouldn't take down the whole preview.
+                    console.error(`Failed to render page ${pageNum}:`, pageError);
+                }
+            }
+
+            if (!renderedAtLeastOne) {
+                pdfCanvasContainer.innerHTML = '<div class="pdf-canvas-loading">Could not render any pages for this file.</div>';
+                pdfBottomNav.classList.remove('active');
+                return;
             }
 
             pdfBottomNav.classList.add('active');
             updatePageUi(1);
-            setupPageIndicator(pdfDoc.numPages);
-            setupPinchToZoom(zoomLayer);
-            setupBottomNavControls(zoomLayer);
+            setupPageIndicator();
         } catch (error) {
             console.error("Canvas render error:", error);
             pdfCanvasContainer.innerHTML = '<div class="pdf-canvas-loading">Could not render preview on this device.</div>';
@@ -415,7 +455,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function setupPageIndicator(numPages) {
+    function setupPageIndicator() {
         if (!pageWrapEls.length) return;
 
         pageIntersectionObserver = new IntersectionObserver((entries) => {
@@ -435,25 +475,28 @@ document.addEventListener('DOMContentLoaded', () => {
         pageWrapEls.forEach(wrap => pageIntersectionObserver.observe(wrap));
     }
 
-    function setupBottomNavControls(zoomLayer) {
-        const applyZoom = (newScale) => {
-            canvasZoomScale = Math.min(Math.max(newScale, 0.5), 3);
-            zoomLayer.style.transform = `scale(${canvasZoomScale})`;
-            pdfZoomResetBtn.textContent = `${Math.round(canvasZoomScale * 100)}%`;
-        };
-
-        pdfPrevPageBtn.addEventListener('click', () => {
-            if (currentVisiblePage > 1) goToPage(currentVisiblePage - 1);
-        });
-        pdfNextPageBtn.addEventListener('click', () => {
-            if (currentVisiblePage < totalCanvasPages) goToPage(currentVisiblePage + 1);
-        });
-        pdfZoomInBtn.addEventListener('click', () => applyZoom(canvasZoomScale + 0.25));
-        pdfZoomOutBtn.addEventListener('click', () => applyZoom(canvasZoomScale - 0.25));
-        pdfZoomResetBtn.addEventListener('click', () => applyZoom(1));
+    function applyCanvasZoom(newScale) {
+        if (!activeZoomLayer) return;
+        canvasZoomScale = Math.min(Math.max(newScale, 0.5), 3);
+        activeZoomLayer.style.transform = `scale(${canvasZoomScale})`;
+        pdfZoomResetBtn.textContent = `${Math.round(canvasZoomScale * 100)}%`;
     }
 
-    function setupPinchToZoom(zoomLayer) {
+    // Bottom-nav and pinch-zoom listeners are wired up ONCE here (not per
+    // render) — they always act on the CURRENT state via the outer
+    // pageWrapEls/activeZoomLayer variables, so re-generating the preview
+    // never stacks duplicate handlers or references stale/detached canvases.
+    pdfPrevPageBtn.addEventListener('click', () => {
+        if (currentVisiblePage > 1) goToPage(currentVisiblePage - 1);
+    });
+    pdfNextPageBtn.addEventListener('click', () => {
+        if (currentVisiblePage < totalCanvasPages) goToPage(currentVisiblePage + 1);
+    });
+    pdfZoomInBtn.addEventListener('click', () => applyCanvasZoom(canvasZoomScale + 0.25));
+    pdfZoomOutBtn.addEventListener('click', () => applyCanvasZoom(canvasZoomScale - 0.25));
+    pdfZoomResetBtn.addEventListener('click', () => applyCanvasZoom(1));
+
+    (function setupPinchToZoom() {
         const getTouchDistance = (touches) => {
             const dx = touches[0].clientX - touches[1].clientX;
             const dy = touches[0].clientY - touches[1].clientY;
@@ -468,13 +511,11 @@ document.addEventListener('DOMContentLoaded', () => {
         }, { passive: true });
 
         pdfCanvasContainer.addEventListener('touchmove', (e) => {
-            if (e.touches.length === 2 && pinchStartDistance) {
+            if (e.touches.length === 2 && pinchStartDistance && activeZoomLayer) {
                 e.preventDefault();
                 const newDistance = getTouchDistance(e.touches);
                 const ratio = newDistance / pinchStartDistance;
-                canvasZoomScale = Math.min(Math.max(pinchStartScale * ratio, 0.5), 3);
-                zoomLayer.style.transform = `scale(${canvasZoomScale})`;
-                pdfZoomResetBtn.textContent = `${Math.round(canvasZoomScale * 100)}%`;
+                applyCanvasZoom(pinchStartScale * ratio);
             }
         }, { passive: false });
 
@@ -483,7 +524,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 pinchStartDistance = null;
             }
         }, { passive: true });
-    }
+    })();
 
     function updateImpositionUiContext() {
         const mode = document.querySelector('input[name="impositionMode"]:checked').value;
