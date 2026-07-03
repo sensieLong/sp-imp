@@ -21,6 +21,7 @@ let totalCanvasPages = 0;
 let pageWrapEls = [];
 let thumbEls = [];
 let activeZoomLayer = null;
+let pageVisibility = {}; // Added to perfectly track which page is actually on screen
 const PDFJS_WORKER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
 function isPdfJsReady() {
@@ -329,6 +330,7 @@ document.addEventListener('DOMContentLoaded', () => {
         pageWrapEls = [];
         thumbEls = [];
         activeZoomLayer = null;
+        pageVisibility = {}; // Clear tracker
     }
 
     async function renderPdfWithCanvas(blobUrl) {
@@ -439,38 +441,76 @@ document.addEventListener('DOMContentLoaded', () => {
         pdfPageCounter.textContent = `Page ${pageNum} / ${totalCanvasPages}`;
         pdfPrevPageBtn.disabled = pageNum <= 1;
         pdfNextPageBtn.disabled = pageNum >= totalCanvasPages;
+        
         thumbEls.forEach(el => {
             el.classList.toggle('active', Number(el.dataset.pageNum) === pageNum);
         });
+        
         const activeThumb = thumbEls[pageNum - 1];
-        if (activeThumb) {
-            activeThumb.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        if (activeThumb && pdfThumbnailRail) {
+            // FIX: Use absolute scroll target mathematically to prevent window jumps
+            const railHeight = pdfThumbnailRail.clientHeight;
+            const thumbTop = activeThumb.offsetTop;
+            const thumbHeight = activeThumb.offsetHeight;
+            
+            // Calculate perfect center
+            const targetScroll = thumbTop - (railHeight / 2) + (thumbHeight / 2);
+            
+            pdfThumbnailRail.scrollTo({
+                top: targetScroll,
+                behavior: 'smooth'
+            });
         }
     }
 
     function goToPage(pageNum) {
         const wrap = pageWrapEls[pageNum - 1];
-        if (wrap) {
-            wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        if (wrap && pdfCanvasContainer && activeZoomLayer) {
+            // FIX: Use absolute scrolling within the container, accounting for current zoom scale.
+            // offsetTop measures absolute position. Multiplying by scale ensures it lands precisely
+            // at the zoomed coordinates without jumping the outer mobile window frame.
+            const targetScroll = wrap.offsetTop * canvasZoomScale;
+            
+            pdfCanvasContainer.scrollTo({
+                top: targetScroll,
+                behavior: 'smooth'
+            });
         }
     }
 
     function setupPageIndicator() {
         if (!pageWrapEls.length) return;
 
+        if (pageIntersectionObserver) {
+            pageIntersectionObserver.disconnect();
+        }
+
+        pageVisibility = {}; 
+
+        // FIX: The IntersectionObserver only reports entries that *change*. 
+        // We must update a persistent dictionary (pageVisibility) and check all pages to prevent
+        // the Next/Prev buttons from jumping arbitrarily when passing boundaries.
         pageIntersectionObserver = new IntersectionObserver((entries) => {
-            let mostVisible = null;
             entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                    if (!mostVisible || entry.intersectionRatio > mostVisible.intersectionRatio) {
-                        mostVisible = entry;
-                    }
-                }
+                const pageNum = Number(entry.target.dataset.pageNum);
+                pageVisibility[pageNum] = entry.intersectionRatio;
             });
-            if (mostVisible) {
-                updatePageUi(Number(mostVisible.target.dataset.pageNum));
+
+            let maxRatio = 0;
+            let mostVisiblePage = currentVisiblePage;
+
+            for (const [pageNum, ratio] of Object.entries(pageVisibility)) {
+                if (ratio > maxRatio) {
+                    maxRatio = ratio;
+                    mostVisiblePage = Number(pageNum);
+                }
             }
-        }, { root: pdfCanvasContainer, threshold: [0.25, 0.5, 0.75] });
+
+            if (maxRatio > 0 && mostVisiblePage !== currentVisiblePage) {
+                updatePageUi(mostVisiblePage);
+            }
+            // More granular thresholds ensure the tracker is aware of exactly what proportion of the screen the pages occupy
+        }, { root: pdfCanvasContainer, threshold: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0] });
 
         pageWrapEls.forEach(wrap => pageIntersectionObserver.observe(wrap));
     }
@@ -482,16 +522,14 @@ document.addEventListener('DOMContentLoaded', () => {
         pdfZoomResetBtn.textContent = `${Math.round(canvasZoomScale * 100)}%`;
     }
 
-    // Bottom-nav and pinch-zoom listeners are wired up ONCE here (not per
-    // render) — they always act on the CURRENT state via the outer
-    // pageWrapEls/activeZoomLayer variables, so re-generating the preview
-    // never stacks duplicate handlers or references stale/detached canvases.
     pdfPrevPageBtn.addEventListener('click', () => {
         if (currentVisiblePage > 1) goToPage(currentVisiblePage - 1);
     });
+    
     pdfNextPageBtn.addEventListener('click', () => {
         if (currentVisiblePage < totalCanvasPages) goToPage(currentVisiblePage + 1);
     });
+    
     pdfZoomInBtn.addEventListener('click', () => applyCanvasZoom(canvasZoomScale + 0.25));
     pdfZoomOutBtn.addEventListener('click', () => applyCanvasZoom(canvasZoomScale - 0.25));
     pdfZoomResetBtn.addEventListener('click', () => applyCanvasZoom(1));
