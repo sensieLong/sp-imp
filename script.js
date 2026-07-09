@@ -115,6 +115,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const closePanelBtn = document.getElementById('closePanelBtn');
     const saddleOnlyRows = document.querySelectorAll('.layout-saddle-only');
 
+    // Solid Background (No Bleeds) Elements
+    const solidBgGroup = document.getElementById('solidBgGroup');
+    const solidBgToggle = document.getElementById('solidBgToggle');
+    const solidBgColorRow = document.getElementById('solidBgColorRow');
+    const solidBgColor = document.getElementById('solidBgColor');
+
     // --- Modal Logic ---
     btnAbout.addEventListener('click', () => { aboutModal.style.display = "block"; });
     closeAbout.addEventListener('click', () => { aboutModal.style.display = "none"; });
@@ -579,6 +585,24 @@ document.addEventListener('DOMContentLoaded', () => {
             saddleTabBtn.style.display = 'flex'; 
             saddleOnlyRows.forEach(el => el.style.display = 'flex');
         }
+
+        updateBleedUiContext();
+    }
+
+    // Solid color background is only meaningful for the grid-based layouts
+    // (Multi-out, Work & Turn, Sana OL) and only while "No bleeds" is active.
+    function updateBleedUiContext() {
+        const mode = document.querySelector('input[name="impositionMode"]:checked').value;
+        const bleedType = document.querySelector('input[name="bleedType"]:checked').value;
+        const isGridMode = (mode === 'multiout' || mode === 'workandturn' || mode === 'sanaol');
+
+        if (bleedType === 'none' && isGridMode) {
+            solidBgGroup.style.display = 'block';
+        } else {
+            solidBgGroup.style.display = 'none';
+        }
+
+        solidBgColorRow.style.display = solidBgToggle.checked ? 'flex' : 'none';
     }
 
     // --- Core Layout Processing Function ---
@@ -701,6 +725,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateImpositionUiContext();
                 generatePreview();
             });
+        } else if (input.name === 'bleedType') {
+            input.addEventListener('change', () => {
+                updateBleedUiContext();
+                generatePreview();
+            });
+        } else if (input.id === 'solidBgToggle') {
+            input.addEventListener('change', () => {
+                updateBleedUiContext();
+                generatePreview();
+            });
+        } else if (input.type === 'color') {
+            input.addEventListener('input', generatePreview);
         } else if (input.type === 'number' || input.type === 'text') {
             input.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter') {
@@ -775,6 +811,10 @@ async function createImposedPDF(inputPdfBuffer) {
     const bleedLR = parseFloat(document.getElementById('bleedLR').value) * in2pt;
     const bleedTB = parseFloat(document.getElementById('bleedTB').value) * in2pt;
 
+    const solidBgEnabled = bleedType === 'none' && document.getElementById('solidBgToggle').checked;
+    const solidBgRgb01 = hexToRgb01(document.getElementById('solidBgColor').value);
+    const solidBgColor = rgb(solidBgRgb01.r, solidBgRgb01.g, solidBgRgb01.b);
+
     const finalSheetWidth = isLandscape ? Math.max(paperWidth, paperHeight) : Math.min(paperWidth, paperHeight);
     const finalSheetHeight = isLandscape ? Math.min(paperWidth, paperHeight) : Math.max(paperWidth, paperHeight);
 
@@ -842,6 +882,10 @@ async function createImposedPDF(inputPdfBuffer) {
 
         for (let pageIndex = 0; pageIndex < pageCount; pageIndex++) {
             const sheet = newPdf.addPage([finalSheetWidth, finalSheetHeight]);
+
+            if (solidBgEnabled) {
+                drawSolidBackground(sheet, startX, startY, cols, rows, itemW, itemH, centerGutter, markDistance, solidBgColor);
+            }
 
             for (let r = 0; r < rows; r++) {
                 for (let c = 0; c < cols; c++) {
@@ -911,6 +955,11 @@ async function createImposedPDF(inputPdfBuffer) {
 
         for (let p = 0; p < pageCount; p += 2) {
             const sheet = newPdf.addPage([finalSheetWidth, finalSheetHeight]);
+
+            if (solidBgEnabled) {
+                drawSolidBackground(sheet, startX, startY, cols, rows, itemW, itemH, centerGutter, markDistance, solidBgColor);
+            }
+
             const frontPage = embeddedPages[p];
             const backPage = (p + 1 < pageCount) ? embeddedPages[p + 1] : frontPage;
 
@@ -996,6 +1045,10 @@ async function createImposedPDF(inputPdfBuffer) {
             
             if (cellIndex === 0) {
                 currentSheet = newPdf.addPage([finalSheetWidth, finalSheetHeight]);
+
+                if (solidBgEnabled) {
+                    drawSolidBackground(currentSheet, startX, startY, cols, rows, itemW, itemH, centerGutter, markDistance, solidBgColor);
+                }
                 
                 if (drawCropMarks) {
                     const markColor = rgb(0, 0, 0);
@@ -1151,6 +1204,41 @@ function drawLeftImpositionLabel(sheet, docName, font, sheetH, targetX, outsStri
     }
 
     sheet.drawText(dateStr, { x: safeXPos, y: startY + nameWidth + outsWidth, size: fontSize, font: font, color: rgb(1, 0, 0), rotate: degrees(90) });
+}
+
+// Converts a "#rrggbb" (or "#rgb") hex string into 0-1 float components for pdf-lib's rgb().
+function hexToRgb01(hex) {
+    let h = (hex || "#ffffff").replace('#', '');
+    if (h.length === 3) h = h.split('').map(ch => ch + ch).join('');
+    const r = parseInt(h.substring(0, 2), 16) / 255;
+    const g = parseInt(h.substring(2, 4), 16) / 255;
+    const b = parseInt(h.substring(4, 6), 16) / 255;
+    return { r, g, b };
+}
+
+// Draws a solid-color rectangle behind the imposed grid, used for the "No Bleeds"
+// solid background option on Multi-out, Work & Turn, and Sana OL layouts.
+// Size = the outer crop-marks bounding rectangle (grid + 2*(distance+length) per side),
+// inset by `length` on every side so the marks themselves remain visible on top of it.
+// After the inset, the math simplifies to: grid size + 2*distance per side, always centered.
+function drawSolidBackground(sheet, startX, startY, cols, rows, itemW, itemH, centerGutter, distance, color) {
+    const gridLeftX = startX;
+    const gridRightX = startX + (cols * itemW) + ((cols - 1) * centerGutter);
+    const gridBottomY = startY;
+    const gridTopY = startY + (rows * itemH) + ((rows - 1) * centerGutter);
+
+    const bgX = gridLeftX - distance;
+    const bgY = gridBottomY - distance;
+    const bgW = (gridRightX - gridLeftX) + (2 * distance);
+    const bgH = (gridTopY - gridBottomY) + (2 * distance);
+
+    sheet.drawRectangle({
+        x: bgX,
+        y: bgY,
+        width: bgW,
+        height: bgH,
+        color: color
+    });
 }
 
 function drawGridCropMarks(sheet, startX, startY, cols, rows, itemW, itemH, trimW, trimH, activeBleedLR, activeBleedTB, centerGutter, length, distance, thickness, color) {
