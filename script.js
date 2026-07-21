@@ -7,8 +7,17 @@ const supabase1 = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 let currentPdfBlobUrl = null;
 let originalPdfBuffer = null; 
 let originalFileName = "imposed_document.pdf";
+let originalFileHandle = null; // FileSystemFileHandle of the imported PDF, when available
+let currentImposedPdfBytes = null; // raw bytes of the last generated PDF, used by the save-as flow
 let isSignUpMode = false;
 let currentOutsString = ""; 
+
+// The File System Access API lets us: (a) open a file and keep a handle to its
+// location, and (b) point the "Save As" dialog to start in that same location
+// via the `startIn` option. This is Chromium-only (Chrome/Edge/Opera) — Firefox
+// and Safari don't implement it, so those browsers transparently fall back to
+// a normal <input type="file"> pick and a normal browser download.
+const supportsFileSystemAccess = (typeof window.showOpenFilePicker === 'function') && (typeof window.showSaveFilePicker === 'function');
 
 // --- Device Detection & Canvas Preview State ---
 let canvasPdfDoc = null;
@@ -304,6 +313,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         currentPdfBlobUrl = null;
         originalPdfBuffer = null;
+        originalFileHandle = null;
+        currentImposedPdfBytes = null;
         currentOutsString = ""; 
         pdfPreview.src = '';
         pdfPreview.style.display = "none";
@@ -574,7 +585,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const mode = document.querySelector('input[name="impositionMode"]:checked').value;
         const saddleTabBtn = document.getElementById('saddleTabBtn');
 
-        if (mode === 'multiout' || mode === 'workandturn' || mode === 'sanaol') {
+        if (mode === 'multiout' || mode === 'workandturn' || mode === 'sanaol' || mode === 'sanaolbtb') {
             saddleTabBtn.style.display = 'none'; 
             saddleOnlyRows.forEach(el => el.style.display = 'none');
             
@@ -594,7 +605,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function updateBleedUiContext() {
         const mode = document.querySelector('input[name="impositionMode"]:checked').value;
         const bleedType = document.querySelector('input[name="bleedType"]:checked').value;
-        const isGridMode = (mode === 'multiout' || mode === 'workandturn' || mode === 'sanaol');
+        const isGridMode = (mode === 'multiout' || mode === 'workandturn' || mode === 'sanaol' || mode === 'sanaolbtb');
 
         if (bleedType === 'none' && isGridMode) {
             solidBgGroup.style.display = 'block';
@@ -615,6 +626,7 @@ document.addEventListener('DOMContentLoaded', () => {
             generateBtn.disabled = true;
 
             const imposedPdfBytes = await createImposedPDF(originalPdfBuffer.slice(0));
+            currentImposedPdfBytes = imposedPdfBytes;
             const blob = new Blob([imposedPdfBytes], { type: 'application/pdf' });
             
             if (currentPdfBlobUrl) {
@@ -646,10 +658,39 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    // When the File System Access API is available, hijack the file input's
+    // click to use showOpenFilePicker() instead of the native dialog. This is
+    // the only way to get a FileSystemFileHandle we can later hand to
+    // showSaveFilePicker's `startIn` option, so "Download" can default to the
+    // same folder the PDF was opened from. Browsers without the API just fall
+    // through to the native <input type="file"> dialog below.
+    if (supportsFileSystemAccess) {
+        fileInput.addEventListener('click', (e) => {
+            e.preventDefault();
+            (async () => {
+                try {
+                    const [handle] = await window.showOpenFilePicker({
+                        types: [{ description: 'PDF Files', accept: { 'application/pdf': ['.pdf'] } }],
+                        excludeAcceptAllOption: false,
+                        multiple: false
+                    });
+                    originalFileHandle = handle;
+                    const file = await handle.getFile();
+                    originalFileName = file.name;
+                    originalPdfBuffer = await file.arrayBuffer();
+                    generatePreview();
+                } catch (err) {
+                    if (err && err.name !== 'AbortError') console.error(err);
+                }
+            })();
+        });
+    }
+
     fileInput.addEventListener('change', async (e) => {
         if (fileInput.files.length > 0) {
             const file = fileInput.files[0];
             originalFileName = file.name;
+            originalFileHandle = null; // native picker gives no handle/location info
             originalPdfBuffer = await file.arrayBuffer();
             generatePreview();
         }
@@ -695,6 +736,14 @@ document.addEventListener('DOMContentLoaded', () => {
             centerGutter: "0"
         },
         sanaol: {
+            marginLeft: "0",
+            marginTop: "0",
+            markLength: "0.125",
+            markThickness: "0.013",
+            markDistance: "0",
+            centerGutter: "0"
+        },
+        sanaolbtb: {
             marginLeft: "0",
             marginTop: "0",
             markLength: "0.125",
@@ -750,23 +799,49 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    downloadBtn.addEventListener('click', () => {
+    downloadBtn.addEventListener('click', async () => {
         if (!currentPdfBlobUrl) return;
-        const a = document.createElement('a');
-        a.href = currentPdfBlobUrl;
 
         const baseFileName = originalFileName.replace(/\.pdf$/i, '');
         const d = new Date();
         const dateString = `${d.getMonth() + 1}-${d.getDate()}-${d.getFullYear()}`;
-        
+
         let finalDownloadName = baseFileName;
         if (currentOutsString) {
             finalDownloadName += ` (${currentOutsString})`;
         }
         finalDownloadName += ` ${dateString}.pdf`;
 
+        if (supportsFileSystemAccess && currentImposedPdfBytes) {
+            try {
+                const pickerOptions = {
+                    suggestedName: finalDownloadName,
+                    types: [{ description: 'PDF Files', accept: { 'application/pdf': ['.pdf'] } }]
+                };
+                // Points the Save dialog to the same folder the source PDF was opened from.
+                if (originalFileHandle) {
+                    pickerOptions.startIn = originalFileHandle;
+                }
+
+                const saveHandle = await window.showSaveFilePicker(pickerOptions);
+                const writable = await saveHandle.createWritable();
+                await writable.write(currentImposedPdfBytes);
+                await writable.close();
+
+                statusMessage.style.color = "#4CAF50";
+                statusMessage.textContent = "Saved!";
+                return;
+            } catch (err) {
+                if (err && err.name === 'AbortError') return; // user cancelled the save dialog
+                console.error(err);
+                // fall through to the classic download below if the save-as flow failed
+            }
+        }
+
+        const a = document.createElement('a');
+        a.href = currentPdfBlobUrl;
         a.download = finalDownloadName;
-        
+
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -1070,6 +1145,103 @@ async function createImposedPDF(inputPdfBuffer) {
             const cellY = startY + (rows - 1 - r) * (itemH + centerGutter);
 
             currentSheet.drawPage(embeddedPages[p], { x: cellX, y: cellY, xScale: 1, yScale: 1 });
+        }
+    }
+    else if (impositionMode === 'sanaolbtb') {
+        const embeddedPages = await newPdf.embedPdf(originalPdf, originalPdf.getPageIndices());
+        if (embeddedPages.length === 0) return;
+
+        const firstPage = embeddedPages[0];
+        const activeBleedLR = (bleedType === 'fixed') ? bleedLR : 0;
+        const activeBleedTB = (bleedType === 'fixed') ? bleedTB : 0;
+
+        const itemW = firstPage.width;
+        const itemH = firstPage.height;
+
+        const trimW = itemW - (2 * activeBleedLR);
+        const trimH = itemH - (2 * activeBleedTB);
+
+        const availW = finalSheetWidth - (2 * marginLeft);
+        const availH = finalSheetHeight - (2 * marginTop);
+
+        let cols = Math.floor((availW + centerGutter) / (itemW + centerGutter));
+        let rows = Math.floor((availH + centerGutter) / (itemH + centerGutter));
+
+        cols = Math.max(1, cols);
+        rows = Math.max(1, rows);
+        const cellsPerSheet = cols * rows;
+
+        const outsCount = cellsPerSheet;
+
+        const totalGridWidth = (cols * itemW) + ((cols - 1) * centerGutter);
+        const totalGridHeight = (rows * itemH) + ((rows - 1) * centerGutter);
+
+        const startX = centerOutput ? (finalSheetWidth - totalGridWidth) / 2 : marginLeft;
+        const startY = centerOutput ? (finalSheetHeight - totalGridHeight) / 2 : (finalSheetHeight - marginTop - totalGridHeight);
+
+        const gridTopY = startY + (rows * itemH) + ((rows - 1) * centerGutter);
+        const labelYPos = gridTopY + (drawCropMarks ? markDistance + markLength : 0) + 10;
+        const labelXPos = startX - (drawCropMarks ? markDistance + markLength : 0) - 10;
+
+        const outsText = outsCount === 1 ? "1 kind" : `${outsCount} kinds`;
+        currentOutsString = outsText;
+
+        // Source pages are consumed two at a time: the first of each pair lands
+        // on the FRONT sheet at its natural cell; the second lands on the
+        // paired BACK sheet (the very next page in the output) at the
+        // horizontally mirrored cell — same row, column flipped left-to-right.
+        // That mirroring is what makes item 1 (front, top-left) and item 2
+        // (back, top-right) register together back-to-back once the sheets
+        // are duplex-printed and cut.
+        const totalPairSheets = Math.ceil(pageCount / (cellsPerSheet * 2));
+
+        for (let sheetIndex = 0; sheetIndex < totalPairSheets; sheetIndex++) {
+            const frontSheet = newPdf.addPage([finalSheetWidth, finalSheetHeight]);
+            const backSheet = newPdf.addPage([finalSheetWidth, finalSheetHeight]);
+
+            if (solidBgEnabled) {
+                drawSolidBackground(frontSheet, startX, startY, cols, rows, itemW, itemH, centerGutter, markDistance, solidBgColor);
+                drawSolidBackground(backSheet, startX, startY, cols, rows, itemW, itemH, centerGutter, markDistance, solidBgColor);
+            }
+
+            if (drawCropMarks) {
+                const markColor = rgb(0, 0, 0);
+                drawGridCropMarks(frontSheet, startX, startY, cols, rows, itemW, itemH, trimW, trimH, activeBleedLR, activeBleedTB, centerGutter, markLength, markDistance, markThickness, markColor);
+                drawGridCropMarks(backSheet, startX, startY, cols, rows, itemW, itemH, trimW, trimH, activeBleedLR, activeBleedTB, centerGutter, markLength, markDistance, markThickness, markColor);
+            }
+
+            const frontPrefix = `Sana OL Back-to-Back [Front ${sheetIndex + 1}]`;
+            const backPrefix = `Sana OL Back-to-Back [Back ${sheetIndex + 1}]`;
+            const frontDocLabel = includeFilename ? `${frontPrefix} - ${originalFileName}` : "";
+            const backDocLabel = includeFilename ? `${backPrefix} - ${originalFileName}` : "";
+            const frontDocLabelLeft = includeFilenameLeft ? `${frontPrefix} - ${originalFileName}` : "";
+            const backDocLabelLeft = includeFilenameLeft ? `${backPrefix} - ${originalFileName}` : "";
+
+            drawImpositionLabel(frontSheet, frontDocLabel, helveticaFont, finalSheetWidth, labelYPos, outsText);
+            drawLeftImpositionLabel(frontSheet, frontDocLabelLeft, helveticaFont, finalSheetHeight, labelXPos, outsText);
+            drawImpositionLabel(backSheet, backDocLabel, helveticaFont, finalSheetWidth, labelYPos, outsText);
+            drawLeftImpositionLabel(backSheet, backDocLabelLeft, helveticaFont, finalSheetHeight, labelXPos, outsText);
+
+            for (let cellIndex = 0; cellIndex < cellsPerSheet; cellIndex++) {
+                const frontPageIdx = (sheetIndex * cellsPerSheet * 2) + (cellIndex * 2);
+                const backPageIdx = frontPageIdx + 1;
+
+                const r = Math.floor(cellIndex / cols);
+                const c = cellIndex % cols;
+
+                const cellY = startY + (rows - 1 - r) * (itemH + centerGutter);
+
+                if (frontPageIdx < pageCount) {
+                    const cellX = startX + c * (itemW + centerGutter);
+                    frontSheet.drawPage(embeddedPages[frontPageIdx], { x: cellX, y: cellY, xScale: 1, yScale: 1 });
+                }
+
+                if (backPageIdx < pageCount) {
+                    const mirroredC = cols - 1 - c;
+                    const backCellX = startX + mirroredC * (itemW + centerGutter);
+                    backSheet.drawPage(embeddedPages[backPageIdx], { x: backCellX, y: cellY, xScale: 1, yScale: 1 });
+                }
+            }
         }
     }
     else if (impositionMode === 'saddle') {
