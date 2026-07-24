@@ -25,9 +25,10 @@
         </div>
         
         <div class="nav-actions" id="navActions" style="display: none;">
-            <input type="file" id="pdfInput" accept="application/pdf" class="custom-file-input">
+            <input type="file" id="pdfInput" accept=".pdf,.imp,application/pdf" class="custom-file-input" multiple>
             <span id="statusMessage"></span>
             <button id="generateBtn" class="primary-btn">Preview Imposition</button>
+            <button id="downloadSettingsBtn" class="secondary-btn">Download Settings</button>
             <button id="downloadBtn" class="secondary-btn" style="display: none;">Download PDF</button>
             <button id="logoutBtn" class="secondary-btn logout-btn">Logout</button>
             

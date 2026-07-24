@@ -60,6 +60,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- UI Elements ---
     const generateBtn = document.getElementById('generateBtn');
     const downloadBtn = document.getElementById('downloadBtn');
+    const downloadSettingsBtn = document.getElementById('downloadSettingsBtn');
     const fileInput = document.getElementById('pdfInput');
     const statusMessage = document.getElementById('statusMessage');
     const pdfPreview = document.getElementById('pdfPreview');
@@ -616,6 +617,64 @@ document.addEventListener('DOMContentLoaded', () => {
         solidBgColorRow.style.display = solidBgToggle.checked ? 'flex' : 'none';
     }
 
+    // --- Settings (.imp) Save / Load ---
+    // Generically walks every input inside #mainApp so newly added settings
+    // are automatically included without having to update this list by hand.
+    function collectAppSettings() {
+        const settings = { fileType: 'spiokoks-imposition-settings', version: 1, savedAt: new Date().toISOString(), values: {}, radios: {} };
+        const inputs = document.querySelectorAll('#mainApp input');
+        const seenRadioNames = new Set();
+
+        inputs.forEach(input => {
+            if (input.type === 'file') return; // the PDF/IMP picker itself isn't a saved setting
+
+            if (input.type === 'radio') {
+                if (!input.name || seenRadioNames.has(input.name)) return;
+                seenRadioNames.add(input.name);
+                const checkedInput = document.querySelector(`input[name="${input.name}"]:checked`);
+                if (checkedInput) settings.radios[input.name] = checkedInput.value;
+                return;
+            }
+
+            if (!input.id) return; // only elements we can address again by id
+
+            if (input.type === 'checkbox') {
+                settings.values[input.id] = { type: 'checkbox', checked: input.checked };
+            } else {
+                settings.values[input.id] = { type: input.type, value: input.value };
+            }
+        });
+
+        return settings;
+    }
+
+    function applyAppSettings(settings) {
+        if (!settings || typeof settings !== 'object') return;
+
+        if (settings.radios) {
+            Object.entries(settings.radios).forEach(([name, value]) => {
+                document.querySelectorAll(`input[name="${name}"]`).forEach(radio => {
+                    radio.checked = (radio.value === value);
+                });
+            });
+        }
+
+        if (settings.values) {
+            Object.entries(settings.values).forEach(([id, data]) => {
+                const el = document.getElementById(id);
+                if (!el || !data) return;
+                if (data.type === 'checkbox') {
+                    el.checked = !!data.checked;
+                } else {
+                    el.value = data.value;
+                }
+            });
+        }
+
+        // Refresh any panels/rows that show or hide based on the restored mode/bleed type.
+        updateImpositionUiContext();
+    }
+
     // --- Core Layout Processing Function ---
     const generatePreview = async () => {
         if (!originalPdfBuffer) return;
@@ -658,27 +717,71 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    // Tracks which file's location should be used as the "startIn" hint for
+    // future Save dialogs. A .pdf takes priority; a .imp is used only as a
+    // fallback when no .pdf location is known yet.
+    function considerFileHandle(handle, isPdf) {
+        if (!handle) return;
+        if (isPdf || !originalFileHandle) {
+            originalFileHandle = handle;
+        }
+    }
+
+    // Applies whichever of a .pdf / .imp pair were opened together (or separately).
+    // The .imp settings are always applied before the .pdf is processed, per spec —
+    // but if a .pdf is already loaded and only a new .imp is opened afterwards,
+    // the preview is simply regenerated with the newly restored settings.
+    async function processOpenedEntries(entries) {
+        const impEntry = entries.find(e => /\.imp$/i.test(e.file.name));
+        const pdfEntry = entries.find(e => /\.pdf$/i.test(e.file.name));
+
+        if (impEntry) {
+            try {
+                const text = await impEntry.file.text();
+                const settings = JSON.parse(text);
+                applyAppSettings(settings);
+                considerFileHandle(impEntry.handle, false);
+                statusMessage.style.color = "#4CAF50";
+                statusMessage.textContent = "Settings loaded from " + impEntry.file.name;
+            } catch (err) {
+                console.error(err);
+                statusMessage.style.color = "#ff4444";
+                statusMessage.textContent = "Error: invalid .imp settings file";
+            }
+        }
+
+        if (pdfEntry) {
+            originalFileName = pdfEntry.file.name;
+            originalPdfBuffer = await pdfEntry.file.arrayBuffer();
+            considerFileHandle(pdfEntry.handle, true);
+            generatePreview();
+        } else if (impEntry && originalPdfBuffer) {
+            // A PDF was already loaded — re-run it through the newly restored settings.
+            generatePreview();
+        }
+    }
+
     // When the File System Access API is available, hijack the file input's
     // click to use showOpenFilePicker() instead of the native dialog. This is
     // the only way to get a FileSystemFileHandle we can later hand to
     // showSaveFilePicker's `startIn` option, so "Download" can default to the
-    // same folder the PDF was opened from. Browsers without the API just fall
+    // same folder the file was opened from. Browsers without the API just fall
     // through to the native <input type="file"> dialog below.
     if (supportsFileSystemAccess) {
         fileInput.addEventListener('click', (e) => {
             e.preventDefault();
             (async () => {
                 try {
-                    const [handle] = await window.showOpenFilePicker({
-                        types: [{ description: 'PDF Files', accept: { 'application/pdf': ['.pdf'] } }],
+                    const handles = await window.showOpenFilePicker({
+                        types: [{ description: 'PDF or Settings File', accept: { 'application/pdf': ['.pdf'], 'application/json': ['.imp'] } }],
                         excludeAcceptAllOption: false,
-                        multiple: false
+                        multiple: true
                     });
-                    originalFileHandle = handle;
-                    const file = await handle.getFile();
-                    originalFileName = file.name;
-                    originalPdfBuffer = await file.arrayBuffer();
-                    generatePreview();
+                    const entries = await Promise.all(handles.map(async (handle) => ({
+                        file: await handle.getFile(),
+                        handle
+                    })));
+                    await processOpenedEntries(entries);
                 } catch (err) {
                     if (err && err.name !== 'AbortError') console.error(err);
                 }
@@ -688,15 +791,55 @@ document.addEventListener('DOMContentLoaded', () => {
 
     fileInput.addEventListener('change', async (e) => {
         if (fileInput.files.length > 0) {
-            const file = fileInput.files[0];
-            originalFileName = file.name;
-            originalFileHandle = null; // native picker gives no handle/location info
-            originalPdfBuffer = await file.arrayBuffer();
-            generatePreview();
+            const entries = Array.from(fileInput.files).map(file => ({ file, handle: null }));
+            await processOpenedEntries(entries);
         }
     });
 
     generateBtn.addEventListener('click', generatePreview);
+
+    downloadSettingsBtn.addEventListener('click', async () => {
+        const settings = collectAppSettings();
+        const json = JSON.stringify(settings, null, 2);
+
+        const baseFileName = originalFileName.replace(/\.pdf$/i, '');
+        const impFileName = `${baseFileName}.imp`;
+
+        if (supportsFileSystemAccess) {
+            try {
+                const pickerOptions = {
+                    suggestedName: impFileName,
+                    types: [{ description: 'Imposition Settings', accept: { 'application/json': ['.imp'] } }]
+                };
+                if (originalFileHandle) {
+                    pickerOptions.startIn = originalFileHandle;
+                }
+
+                const saveHandle = await window.showSaveFilePicker(pickerOptions);
+                const writable = await saveHandle.createWritable();
+                await writable.write(json);
+                await writable.close();
+
+                statusMessage.style.color = "#4CAF50";
+                statusMessage.textContent = "Settings saved!";
+                return;
+            } catch (err) {
+                if (err && err.name === 'AbortError') return; // user cancelled the save dialog
+                console.error(err);
+                // fall through to the classic download below if the save-as flow failed
+            }
+        }
+
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = impFileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    });
 
     // Complete preset table — every field listed here is force-set whenever
     // its mode is selected, regardless of which mode was active before.
